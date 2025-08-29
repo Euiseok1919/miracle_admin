@@ -1,52 +1,70 @@
-// server.js (수정 후 최종본)
+// 1. 필요한 부품들 가져오기
+require('dotenv').config(); // .env 파일을 사용하기 위한 설정
 const express = require('express');
-const { Pool } = require('pg');
 const cors = require('cors');
-const path = require('path'); // path 모듈 추가
+const { Pool } = require('pg'); // PostgreSQL 데이터베이스와 통신하기 위한 부품
+const path = require('path');
 
+// 2. 서버 기본 설정
 const app = express();
-app.use(cors());
+const port = process.env.PORT || 3000;
 
-// 중요: public 폴더의 정적 파일을 제공하도록 설정
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(cors()); // 다른 주소에서의 요청을 허용 (보안)
+app.use(express.json()); // JSON 형태의 데이터를 주고받을 수 있게 설정
+app.use(express.static(__dirname)); // 👈 [수정 1] 현재 폴더를 정적 파일 폴더로 설정
 
-// Render에서 자동으로 제공하는 환경 변수(DATABASE_URL)를 사용합니다.
-// 로컬 테스트를 위해 || 연산자로 기존 연결 문자열을 남겨둘 수 있습니다.
-const connectionString = process.env.DATABASE_URL || '여기에_NEON_연결_문자열을_붙여넣으세요';
-
+// 3. NEON 데이터베이스 연결 설정
 const pool = new Pool({
-    connectionString: connectionString,
-    // Render에서 배포 시 SSL 연결이 필수입니다.
-    ssl: {
-      rejectUnauthorized: false
-    }
+  connectionString: process.env.DATABASE_URL, // DATABASE_URL은 나중에 호스팅 사이트에서 설정할 비밀키
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
-// API 로직은 이전과 동일합니다.
-app.get('/orders/:storeId', async (req, res) => {
-    const { storeId } = req.params;
-    // ... (이전과 동일한 DB 조회 로직) ...
-    try {
-        const query = `
-            SELECT
-                o.order_id, o.user_id, o.total_price, o.order_date,
-                json_agg(json_build_object('name', oi.product_name, 'quantity', oi.quantity, 'price', oi.price)) AS items
-            FROM orders o
-            JOIN order_items oi ON o.order_id = oi.order_id
-            WHERE o.store_id = $1
-            GROUP BY o.order_id
-            ORDER BY o.order_date DESC;
-        `;
-        const { rows } = await pool.query(query, [storeId]);
-        res.json(rows);
-    } catch (error) {
-        console.error('DB 조회 오류:', error);
-        res.status(500).json({ error: '서버 오류가 발생했습니다.' });
-    }
+// 👈 [수정 2] 기본 경로 '/'에 대한 처리 추가
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Render에서 자동으로 제공하는 PORT 환경 변수를 사용합니다.
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`서버가 포트 ${PORT} 에서 실행 중입니다.`);
+// 4. API (서버의 기능) 만들기
+
+// 기능 1: 주문 받아서 데이터베이스에 저장하기
+app.post('/api/orders', async (req, res) => {
+  const { orderId, userId, cart, date, totalPrice } = req.body;
+  const orderDetails = { cart, date, totalPrice };
+
+  // 필수 정보가 있는지 확인
+  if (!orderId || !userId || !cart) {
+    return res.status(400).json({ error: '필수 정보가 누락되었습니다.' });
+  }
+
+  try {
+    const query = 'INSERT INTO orders(order_id, user_id, order_details) VALUES($1, $2, $3) RETURNING *';
+    const values = [orderId, userId, orderDetails];
+    const result = await pool.query(query, values);
+    res.status(201).json(result.rows[0]); // 성공적으로 생성됨
+  } catch (error) {
+    console.error('주문 저장 중 에러 발생:', error);
+    res.status(500).json({ error: '서버 에러가 발생했습니다.' });
+  }
+});
+
+// 기능 2: 특정 사용자의 주문 내역을 데이터베이스에서 찾아서 보내주기
+app.get('/api/orders/:userId', async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    const query = 'SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC';
+    const values = [userId];
+    const result = await pool.query(query, values);
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error('주문 내역 조회 중 에러 발생:', error);
+    res.status(500).json({ error: '서버 에러가 발생했습니다.' });
+  }
+});
+
+// 5. 서버 실행
+app.listen(port, () => {
+  console.log(`서버가 ${port}번 포트에서 실행 중입니다.`);
 });
